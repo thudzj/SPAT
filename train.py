@@ -60,7 +60,7 @@ def main():
 
     if not args.data_dir:
         if os.path.isdir('/data/LargeData/cifar/'):
-    		args.data_dir = '/data/LargeData/cifar/'
+            args.data_dir = '/data/LargeData/cifar/'
 
     cur_timestamp = str(datetime.now())[:-3]  # we also include ms to prevent the probability of name collision
     model_width = {'linear': '', 'cnn': args.n_filters_cnn, 'lenet': '', 'resnet18': ''}[args.model]
@@ -85,10 +85,10 @@ def main():
 
     eps, pgd_alpha, pgd_alpha_train = args.eps / 255, args.pgd_alpha / 255, args.pgd_alpha_train / 255
     train_data_augm = False if args.dataset in ['mnist'] else True
-    train_batches = data.get_loaders(args.dataset, -1, args.batch_size, train_set=True, shuffle=True, data_augm=train_data_augm)
-    train_batches_fast = data.get_loaders(args.dataset, n_eval_every_k_iter, args.batch_size, train_set=True, shuffle=False, data_augm=False)
-    test_batches = data.get_loaders(args.dataset, args.n_final_eval, args.batch_size_eval, train_set=False, shuffle=False, data_augm=False)
-    test_batches_fast = data.get_loaders(args.dataset, n_eval_every_k_iter, args.batch_size_eval, train_set=False, shuffle=False, data_augm=False)
+    train_batches = data.get_loaders(args.data_dir, args.dataset, -1, args.batch_size, train_set=True, shuffle=True, data_augm=train_data_augm)
+    train_batches_fast = data.get_loaders(args.data_dir, args.dataset, n_eval_every_k_iter, args.batch_size, train_set=True, shuffle=False, data_augm=False)
+    test_batches = data.get_loaders(args.data_dir, args.dataset, args.n_final_eval, args.batch_size_eval, train_set=False, shuffle=False, data_augm=False)
+    test_batches_fast = data.get_loaders(args.data_dir, args.dataset, n_eval_every_k_iter, args.batch_size_eval, train_set=False, shuffle=False, data_augm=False)
 
     model = models.get_model(args.model, n_cls, half_prec, data.shapes_dict[args.dataset], args.n_filters_cnn).cuda()
     model.apply(utils.initialize_weights)

@@ -1,10 +1,10 @@
 """
 This code is partially based on the repository of https://github.com/locuslab/fast_adversarial (Wong et al., ICLR'20)
 
-CUDA_VISIBLE_DEVICES=0 python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000
-    [last: test on 10k points] acc_clean 46.10%, pgd_rr 5.40%
-CUDA_VISIBLE_DEVICES=1 python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.003 --n_final_eval=1000 --lr_schedule piecewise
-    [last: test on 10k points] acc_clean 78.50%, pgd_rr 0.00%
+python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 2 --random_start --batch_size 32 --gpu 0
+    [last: test on 10k points] acc_clean 82.40%, pgd_rr 0.00%
+python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 2 --random_start --batch_size 32 --fast --gpu 1
+    [last: test on 10k points] acc_clean 90.00%, pgd_rr 0.00%
 """
 import argparse
 import os
@@ -23,6 +23,10 @@ import torch.autograd.forward_ad as fwAD
 from datetime import datetime
 from utils import rob_acc
 
+try:
+    import apex.amp as amp
+except:
+    pass
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -51,8 +55,10 @@ def get_args():
     parser.add_argument('--batch_size_eval', default=256, type=int, help='batch size for the final eval with pgd rr; 6 GB memory is consumed for 1024 examples with fp32 network')
     parser.add_argument('--n_final_eval', default=-1, type=int, help='on how many examples to do the final evaluation; -1 means on all test examples.')
 
-    parser.add_argument('--n_eps_warmup_epochs', default=0, type=int)
+    parser.add_argument('--n_train_alpha_warmup_epochs', default=0, type=int)
+    parser.add_argument('--train_alpha', default=None, type=float)
     parser.add_argument('--fast', action='store_true')
+    parser.add_argument('--random_start', action='store_true')
     return parser.parse_args()
 
 
@@ -82,8 +88,10 @@ def main():
 
     n_eval_every_k_iter = args.n_eval_every_k_iter
     args.pgd_alpha = args.eps / 4
+    if args.train_alpha is None:
+        args.train_alpha = args.eps
 
-    eps, pgd_alpha= args.eps / 255, args.pgd_alpha / 255
+    eps, pgd_alpha, train_alpha= args.eps / 255, args.pgd_alpha / 255, args.train_alpha / 255
     train_data_augm = False if args.dataset in ['mnist'] else True
     train_batches = data.get_loaders(args.data_dir, args.dataset, -1, args.batch_size, train_set=True, shuffle=True, data_augm=train_data_augm)
     train_batches_fast = data.get_loaders(args.data_dir, args.dataset, n_eval_every_k_iter, args.batch_size, train_set=True, shuffle=False, data_augm=False)
@@ -104,7 +112,6 @@ def main():
         raise ValueError('decide about the right optimizer for the new model')
 
     if half_prec:
-        import apex.amp as amp
         model, opt = amp.initialize(model, opt, opt_level="O1")
 
     delta = torch.zeros(args.batch_size, *data.shapes_dict[args.dataset][1:]).cuda()
@@ -126,20 +133,24 @@ def main():
             lr = lr_schedule(epoch - 1 + (i + 1) / len(train_batches))  # epoch - 1 since the 0th epoch is skipped
             opt.param_groups[0].update(lr=lr)
 
-            if args.n_eps_warmup_epochs > 0:
-                n_iterations_max_eps = args.n_eps_warmup_epochs * data.shapes_dict[args.dataset][0] // args.batch_size
-                eps_train = min(iteration / n_iterations_max_eps * eps, eps)
+            if args.n_train_alpha_warmup_epochs > 0:
+                n_iterations_max_train_alpha = args.n_train_alpha_warmup_epochs * data.shapes_dict[args.dataset][0] // args.batch_size
+                alpha_ = min(iteration / n_iterations_max_train_alpha * train_alpha, train_alpha)
             else:
-                eps_train = eps
+                alpha_ = train_alpha
 
             ## SPAT
+            if args.random_start:
+                X.add_(torch.empty_like(X).uniform_(-eps, eps)).clamp_(0, 1)
+
             delta.uniform_(-1, 1).sign_()
             with fwAD.dual_level():
                 output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X, delta)))
             if args.fast:
                 Jdelta.detach_()
+
             R = output.softmax(-1) - F.one_hot(y, n_cls)
-            output_adv = output + eps_train * (R * Jdelta).sum(-1, keepdim=True).sign() * Jdelta
+            output_adv = output + alpha_ * (R * Jdelta).sum(-1, keepdim=True).sign() * Jdelta
             loss = loss_function(output_adv, y)
             loss_benign = loss_function(output.detach(), y)
 
