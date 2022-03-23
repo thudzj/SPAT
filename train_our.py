@@ -1,10 +1,12 @@
 """
 This code is partially based on the repository of https://github.com/locuslab/fast_adversarial (Wong et al., ICLR'20)
 
-python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 2 --random_start --batch_size 32 --gpu 0
-    [last: test on 10k points] acc_clean 82.40%, pgd_rr 0.00%
-python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 2 --random_start --batch_size 32 --fast --gpu 1
-    [last: test on 10k points] acc_clean 90.00%, pgd_rr 0.00%
+python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 10 --random_start --batch_size 128 --gpu 5 --exact
+    [last: test on 10k points] acc_clean 93.20%, pgd_rr 0.00%
+    Done in 37.17m
+python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 10 --random_start --batch_size 128 --gpu 6
+    [last: test on 10k points] acc_clean 43.40%, pgd_rr 2.70%
+    Done in 52.64m
 """
 import argparse
 import os
@@ -57,6 +59,7 @@ def get_args():
 
     parser.add_argument('--n_train_alpha_warmup_epochs', default=0, type=int)
     parser.add_argument('--train_alpha', default=None, type=float)
+    parser.add_argument('--exact', action='store_true')
     parser.add_argument('--fast', action='store_true')
     parser.add_argument('--random_start', action='store_true')
     return parser.parse_args()
@@ -140,19 +143,38 @@ def main():
                 alpha_ = train_alpha
 
             ## SPAT
-            if args.random_start:
-                X.add_(torch.empty_like(X).uniform_(-eps, eps)).clamp_(0, 1)
-
             delta.uniform_(-1, 1).sign_()
-            with fwAD.dual_level():
-                output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X, delta)))
-            if args.fast:
-                Jdelta.detach_()
+            if args.exact:
+                if args.random_start:
+                    noise = torch.empty_like(X).uniform_(-eps, eps)
+                else:
+                    noise = torch.empty_like(X).zero_()
 
-            R = output.softmax(-1) - F.one_hot(y, n_cls)
-            output_adv = output + alpha_ * (R * Jdelta).sum(-1, keepdim=True).sign() * Jdelta
-            loss = loss_function(output_adv, y)
-            loss_benign = loss_function(output.detach(), y)
+                with torch.no_grad():
+                    X_noise = X.add(noise).clamp_(0, 1)
+                    with fwAD.dual_level():
+                        output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, delta)))
+                    R = output.softmax(-1) - F.one_hot(y, n_cls)
+                    delta.mul_((R * Jdelta).sum(-1).sign()[:, None, None, None])
+                    loss_benign = loss_function(output, y)
+
+                    noise.add_(delta, alpha=alpha_).clamp_(-eps, eps)
+                    X_adv = X.add_(noise).clamp_(0, 1)
+
+                loss = loss_function(model(X_adv), y)
+            else:
+                if args.random_start:
+                    X.add_(torch.empty_like(X).uniform_(-eps, eps)).clamp_(0, 1)
+
+                with fwAD.dual_level():
+                    output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X, delta)))
+                if args.fast:
+                    Jdelta.detach_()
+
+                R = output.softmax(-1) - F.one_hot(y, n_cls)
+                output_adv = output + alpha_ * (R * Jdelta).sum(-1, keepdim=True).sign() * Jdelta
+                loss = loss_function(output_adv, y)
+                loss_benign = loss_function(output.detach(), y)
 
             if epoch != 0:
                 opt.zero_grad()
