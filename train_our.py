@@ -1,12 +1,10 @@
 """
 This code is partially based on the repository of https://github.com/locuslab/fast_adversarial (Wong et al., ICLR'20)
 
-python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 10 --random_start --batch_size 128 --gpu 5 --exact
-    [last: test on 10k points] acc_clean 93.20%, pgd_rr 0.00%
-    Done in 37.17m
+python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 10 --random_start --batch_size 128 --gpu 5 --exact --num-samples 10
+
 python train_our.py --dataset=cifar10 --epochs=30 --lr_max=0.1 --n_final_eval=1000 --train_alpha 10 --random_start --batch_size 128 --gpu 6
-    [last: test on 10k points] acc_clean 43.40%, pgd_rr 2.70%
-    Done in 52.64m
+
 """
 import argparse
 import os
@@ -58,6 +56,7 @@ def get_args():
     parser.add_argument('--n_final_eval', default=-1, type=int, help='on how many examples to do the final evaluation; -1 means on all test examples.')
 
     parser.add_argument('--n_train_alpha_warmup_epochs', default=0, type=int)
+    parser.add_argument('--num-samples', default=1, type=int)
     parser.add_argument('--train_alpha', default=None, type=float)
     parser.add_argument('--exact', action='store_true')
     parser.add_argument('--fast', action='store_true')
@@ -143,26 +142,30 @@ def main():
                 alpha_ = train_alpha
 
             ## SPAT
-            delta.uniform_(-1, 1).sign_()
             if args.exact:
                 if args.random_start:
                     noise = torch.empty_like(X).uniform_(-eps, eps)
                 else:
                     noise = torch.empty_like(X).zero_()
+                X_noise = X.add(noise).clamp_(0, 1)
 
-                with torch.no_grad():
-                    X_noise = X.add(noise).clamp_(0, 1)
-                    with fwAD.dual_level():
-                        output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, delta)))
-                    R = output.softmax(-1) - F.one_hot(y, n_cls)
-                    delta.mul_((R * Jdelta).sum(-1).sign()[:, None, None, None])
+                for sample_i in range(args.num_samples):
+                    delta.uniform_(-1, 1).sign_()
+                    grads = []
+                    with torch.no_grad():
+                        with fwAD.dual_level():
+                            output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, delta)))
+                        R = output.softmax(-1) - F.one_hot(y, n_cls)
+                        grads.append(delta * (R * Jdelta).sum(-1).sign()[:, None, None, None])
+
                     loss_benign = loss_function(output, y)
+                    noise.add_(sum(grads)/args.num_samples, alpha=alpha_).clamp_(-eps, eps)
 
-                    noise.add_(delta, alpha=alpha_).clamp_(-eps, eps)
-                    X_adv = X.add_(noise).clamp_(0, 1)
+                X_adv = X.add_(noise).clamp_(0, 1)
 
                 loss = loss_function(model(X_adv), y)
             else:
+                delta.uniform_(-1, 1).sign_()
                 if args.random_start:
                     X.add_(torch.empty_like(X).uniform_(-eps, eps)).clamp_(0, 1)
 
