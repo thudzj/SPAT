@@ -156,10 +156,10 @@ def main():
                         with fwAD.dual_level():
                             output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, delta)))
                         R = output.softmax(-1) - F.one_hot(y, n_cls)
-                        grads.append(delta * (R * Jdelta).sum(-1).sign()[:, None, None, None])
+                        grads.append(delta * (R * Jdelta).sum(-1)[:, None, None, None])
 
                 loss_benign = loss_function(output, y)
-                noise.add_(sum(grads)/args.num_samples, alpha=alpha_).clamp_(-eps, eps)
+                noise.add_((sum(grads)/args.num_samples).sign(), alpha=alpha_).clamp_(-eps, eps)
                 X_adv = X.add_(noise).clamp_(0, 1)
                 loss = loss_function(model(X_adv), y)
             else:
