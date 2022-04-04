@@ -63,6 +63,7 @@ def get_args():
 	parser.add_argument('--exact', action='store_true')
 	parser.add_argument('--fast', action='store_true')
 	parser.add_argument('--random_start', action='store_true')
+	parser.add_argument('--num-steps', default=1, type=int)
 	parser.add_argument('--dist-type', default='radamecher', type=str, choices=['radamecher', 'gaussian', 'orthogonal-gaussian', 'eigen'])
 	return parser.parse_args()
 
@@ -122,7 +123,7 @@ def main():
 	lr_schedule = utils.get_lr_schedule(args.lr_schedule, args.epochs, args.lr_max)
 	loss_function = nn.CrossEntropyLoss()
 
-	eigenvecs = get_eigenvecs_of_grads(args, model, loss_function, train_batches, eps, times=3)
+	eigenvecs = get_eigenvecs_of_grads(args, model, loss_function, train_batches, eps, times=3) if args.dist_type == 'eigen' else None
 
 	train_acc_pgd_best, best_state_dict = 0.0, copy.deepcopy(model.state_dict())
 	start_time = time.time()
@@ -150,19 +151,24 @@ def main():
 					noise = torch.empty_like(X).uniform_(-eps, eps)
 				else:
 					noise = torch.empty_like(X).zero_()
-				X_noise = X.add(noise).clamp_(0, 1)
 
-				deltas = get_batch_perturbations(args.dist_type, X.shape[0], args.num_samples, np.prod(X.shape[1:]), eigenvecs)
-				grads = []
-				for sample_i in range(args.num_samples):
-					with torch.no_grad():
-						with fwAD.dual_level():
-							output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, deltas[:, sample_i].view_as(X))))
-						R = output.softmax(-1) - F.one_hot(y, n_cls)
-						grads.append(deltas[:, sample_i].view_as(X) * (R * Jdelta).sum(-1)[:, None, None, None])
+				for step in range(args.num_steps):
+					X_noise = X.add(noise).clamp_(0, 1)
 
-				loss_benign = loss_function(output, y)
-				noise.add_((sum(grads)/args.num_samples).sign(), alpha=alpha_).clamp_(-eps, eps)
+					deltas = get_batch_perturbations(args.dist_type, X.shape[0], args.num_samples, np.prod(X.shape[1:]), eigenvecs)
+					grads = []
+					for sample_i in range(args.num_samples):
+						with torch.no_grad():
+							with fwAD.dual_level():
+								output, Jdelta = fwAD.unpack_dual(model(fwAD.make_dual(X_noise, deltas[:, sample_i].view_as(X))))
+							R = output.softmax(-1) - F.one_hot(y, n_cls)
+							grads.append(deltas[:, sample_i].view_as(X) * (R * Jdelta).sum(-1)[:, None, None, None])
+
+					noise.add_((sum(grads)/args.num_samples).sign(), alpha=alpha_).clamp_(-eps, eps)
+
+					if step == 0:
+						loss_benign = loss_function(output, y)
+
 				X_adv = X.add_(noise).clamp_(0, 1)
 				loss = loss_function(model(X_adv), y)
 			else:
